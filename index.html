@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>瀏覽器版 FFmpeg 轉檔工具</title>
+    <script src="coi-serviceworker.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
+
+    <div class="bg-white p-8 rounded-xl shadow-lg w-full max-w-2xl">
+        <h1 class="text-2xl font-bold text-gray-800 mb-6 text-center">🖼️ + 🎵 = 🎬 影片合成器</h1>
+        
+        <div class="space-y-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">1. 選擇圖片 (.jpg/.png)</label>
+                    <input type="file" id="image-upload" accept="image/*" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"/>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">2. 選擇音檔 (.m4a/.mp3)</label>
+                    <input type="file" id="audio-upload" accept="audio/*" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-green-50 file:text-green-700 hover:file:bg-green-100"/>
+                </div>
+            </div>
+
+            <button id="convert-btn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                開始轉檔 (Start FFmpeg)
+            </button>
+
+            <div id="status-area" class="hidden bg-gray-50 p-4 rounded-lg border border-gray-200 text-sm font-mono text-gray-600 max-h-40 overflow-y-auto">
+                <p>等待指令...</p>
+            </div>
+
+            <div id="result-area" class="hidden text-center">
+                <h3 class="text-lg font-bold text-gray-800 mb-2">🎉 轉檔完成！</h3>
+                <video id="output-video" controls class="w-full rounded-lg shadow-md mb-4 bg-black"></video>
+                <a id="download-link" class="inline-block bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded-full transition-colors">
+                    下載影片
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createFFmpeg, fetchFile } = FFmpeg;
+        // 初始化 FFmpeg 實例 (開啟 log 可以看到詳細進度)
+        const ffmpeg = createFFmpeg({ log: true });
+
+        const imageInput = document.getElementById('image-upload');
+        const audioInput = document.getElementById('audio-upload');
+        const convertBtn = document.getElementById('convert-btn');
+        const statusArea = document.getElementById('status-area');
+        const resultArea = document.getElementById('result-area');
+        const outputVideo = document.getElementById('output-video');
+        const downloadLink = document.getElementById('download-link');
+
+        const log = (message) => {
+            statusArea.innerHTML += `<p>> ${message}</p>`;
+            statusArea.scrollTop = statusArea.scrollHeight;
+        };
+
+        convertBtn.addEventListener('click', async () => {
+            const imgFile = imageInput.files[0];
+            const audioFile = audioInput.files[0];
+
+            if (!imgFile || !audioFile) {
+                alert('請先選擇圖片和音檔！');
+                return;
+            }
+
+            // UI 狀態更新
+            convertBtn.disabled = true;
+            convertBtn.innerText = "轉檔中... (請稍候，這需要瀏覽器算力)";
+            statusArea.classList.remove('hidden');
+            resultArea.classList.add('hidden');
+            statusArea.innerHTML = ''; // 清空 log
+
+            try {
+                // 1. 載入 FFmpeg 核心 (第一次會比較久)
+                if (!ffmpeg.isLoaded()) {
+                    log('正在載入 FFmpeg core (約 20-30MB)...');
+                    await ffmpeg.load();
+                    log('FFmpeg 載入完成！');
+                }
+
+                // 2. 將檔案寫入 FFmpeg 的虛擬記憶體系統
+                const imgName = 'input_image.jpg';
+                const audioName = 'input_audio.m4a';
+                
+                log('正在讀取檔案...');
+                ffmpeg.FS('writeFile', imgName, await fetchFile(imgFile));
+                ffmpeg.FS('writeFile', audioName, await fetchFile(audioFile));
+
+                // 3. 執行轉檔指令
+                // 這是你原本的指令對應到 JS 的寫法
+                // 指令: -loop 1 -i img -i audio -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -c:v libx264 -tune stillimage -c:a copy -pix_fmt yuv420p -shortest output.mp4
+                
+                log('開始執行 FFmpeg 指令...');
+                
+                await ffmpeg.run(
+                    '-loop', '1',
+                    '-i', imgName,
+                    '-i', audioName,
+                    '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', // 自動修復奇數像素
+                    '-c:v', 'libx264',
+                    '-tune', 'stillimage',
+                    '-c:a', 'copy', // 直接複製音訊流，不重新編碼 (速度快)
+                    '-pix_fmt', 'yuv420p',
+                    '-shortest', // 影片長度以最短的為主 (即音訊長度)
+                    'output.mp4'
+                );
+
+                log('轉檔完成！正在處理輸出檔案...');
+
+                // 4. 讀取輸出檔案
+                const data = ffmpeg.FS('readFile', 'output.mp4');
+
+                // 5. 建立 Blob URL 供預覽與下載
+                const videoBlob = new Blob([data.buffer], { type: 'video/mp4' });
+                const videoUrl = URL.createObjectURL(videoBlob);
+
+                outputVideo.src = videoUrl;
+                downloadLink.href = videoUrl;
+                downloadLink.download = 'my_video.mp4';
+
+                resultArea.classList.remove('hidden');
+                log('✅ 全部完成！');
+
+            } catch (error) {
+                console.error(error);
+                log(`❌ 發生錯誤: ${error.message}`);
+                alert('轉檔失敗，請查看 Console (F12) 獲取詳細資訊，或確認是否使用了支援 SharedArrayBuffer 的伺服器環境。');
+            } finally {
+                convertBtn.disabled = false;
+                convertBtn.innerText = "開始轉檔 (Start FFmpeg)";
+            }
+        });
+    </script>
+</body>
+</html>
