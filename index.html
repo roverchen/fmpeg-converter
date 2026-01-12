@@ -100,6 +100,31 @@
                 // 這是你原本的指令對應到 JS 的寫法
                 // 指令: -loop 1 -i img -i audio -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -c:v libx264 -tune stillimage -c:a copy -pix_fmt yuv420p -shortest output.mp4
                 
+                log('開始執行 FFmpeg 指令 (已優化記憶體)...');
+                
+                await ffmpeg.run(
+                    '-loop', '1',
+                    '-i', imgName,
+                    '-i', audioName,
+                    // ★ 修改 1: 強制縮圖到 1280 寬 (720p)，高度自動維持比例且為偶數
+                    '-vf', 'scale=1280:-2', 
+                    
+                    '-c:v', 'libx264',
+                    
+                    // ★ 修改 2: 使用最快預設值 (省記憶體)
+                    '-preset', 'ultrafast', 
+                    
+                    '-tune', 'stillimage',
+                    
+                    // ★ 修改 3: 限制位元率 (防止輸出檔案太大撐爆 RAM)
+                    '-b:v', '1000k', 
+                    
+                    '-c:a', 'copy', 
+                    '-pix_fmt', 'yuv420p',
+                    '-shortest',
+                    'output.mp4'
+                );
+/*                
                 log('開始執行 FFmpeg 指令...');
                 
                 await ffmpeg.run(
@@ -114,7 +139,7 @@
                     '-shortest', // 影片長度以最短的為主 (即音訊長度)
                     'output.mp4'
                 );
-
+*/
                 log('轉檔完成！正在處理輸出檔案...');
 
                 // 4. 讀取輸出檔案
