@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF 轉 PPTX + OCR 文字分離</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    
+    <script src="https://cdn.jsdelivr.net/gh/gitbrent/pptxgenjs@3.12.0/libs/jszip.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/gitbrent/pptxgenjs@3.12.0/dist/pptxgen.min.js"></script>
+
+    <script src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js'></script>
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        #render-container { position: absolute; top: -9999px; left: -9999px; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
+
+    <div class="bg-white p-8 rounded-xl shadow-lg w-full max-w-2xl">
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-800 mb-2">📄 PDF 轉 PPTX (含文字辨識)</h1>
+            <p class="text-gray-500 text-sm">將 PDF 轉為 PPT 圖片，並自動將文字擷取至「備忘稿」中</p>
+        </div>
+
+        <div class="space-y-6">
+            <div class="flex items-center justify-center w-full">
+                <label for="pdf-upload" class="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-blue-300 rounded-lg cursor-pointer bg-blue-50 hover:bg-blue-100 transition-colors">
+                    <div class="flex flex-col items-center justify-center pt-5 pb-6">
+                        <svg class="w-8 h-8 mb-4 text-blue-500" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 20 16">
+                            <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 13h3a3 3 0 0 0 0-6h-.025A5.56 5.56 0 0 0 16 6.5 5.5 5.5 0 0 0 5.207 5.021C5.137 5.017 5.071 5 5 5a4 4 0 0 0 0 8h2.167M10 15V6m0 0L8 8m2-2 2 2"/>
+                        </svg>
+                        <p class="mb-2 text-sm text-gray-500"><span class="font-semibold">點擊上傳 PDF</span></p>
+                        <p class="text-xs text-gray-500" id="file-name">支援 .pdf 格式</p>
+                    </div>
+                    <input id="pdf-upload" type="file" accept="application/pdf" class="hidden" />
+                </label>
+            </div>
+
+            <div class="flex items-center gap-4">
+                <label class="text-sm font-medium text-gray-700">辨識語言：</label>
+                <select id="lang-select" class="flex-1 p-2 border border-gray-300 rounded text-sm">
+                    <option value="chi_tra+eng">繁體中文 + 英文 (推薦)</option>
+                    <option value="eng">僅英文 (速度快)</option>
+                    <option value="chi_tra">僅繁體中文</option>
+                </select>
+            </div>
+
+            <div class="flex gap-4">
+                <button id="convert-btn" disabled class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                    開始轉換 & OCR
+                </button>
+                <button id="download-txt-btn" disabled class="hidden flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg transition-colors">
+                    下載純文字檔 (.txt)
+                </button>
+            </div>
+
+            <div id="progress-container" class="hidden w-full bg-gray-200 rounded-full h-4 dark:bg-gray-700 relative overflow-hidden">
+                <div id="progress-bar" class="bg-blue-600 h-4 rounded-full transition-all duration-300" style="width: 0%"></div>
+            </div>
+            <div id="status-text" class="text-center text-sm text-gray-600 whitespace-pre-wrap"></div>
+        </div>
+    </div>
+
+    <div id="render-container"></div>
+
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        const fileInput = document.getElementById('pdf-upload');
+        const fileNameDisplay = document.getElementById('file-name');
+        const convertBtn = document.getElementById('convert-btn');
+        const downloadTxtBtn = document.getElementById('download-txt-btn');
+        const progressBar = document.getElementById('progress-bar');
+        const progressContainer = document.getElementById('progress-container');
+        const statusText = document.getElementById('status-text');
+        const langSelect = document.getElementById('lang-select');
+
+        let selectedFile = null;
+        let allExtractedText = ""; // 儲存所有提取的文字
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                selectedFile = e.target.files[0];
+                fileNameDisplay.textContent = `已選擇: ${selectedFile.name}`;
+                convertBtn.disabled = false;
+                downloadTxtBtn.classList.add('hidden');
+                statusText.textContent = "";
+                progressContainer.classList.add('hidden');
+            }
+        });
+
+        convertBtn.addEventListener('click', async () => {
+            if (!selectedFile) return;
+
+            convertBtn.disabled = true;
+            langSelect.disabled = true;
+            progressContainer.classList.remove('hidden');
+            allExtractedText = "";
+            
+            try {
+                const arrayBuffer = await selectedFile.arrayBuffer();
+                const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
+                const totalPages = pdf.numPages;
+
+                const pptx = new PptxGenJS();
+                pptx.title = selectedFile.name.replace('.pdf', '');
+
+                statusText.textContent = `準備處理 ${totalPages} 頁... (初次載入 OCR 引擎可能需時較久)`;
+
+                for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+                    // 更新進度
+                    const percent = Math.round(((pageNum - 1) / totalPages) * 100);
+                    progressBar.style.width = `${percent}%`;
+                    statusText.textContent = `[${pageNum}/${totalPages}] 正在渲染與辨識文字...`;
+
+                    const page = await pdf.getPage(pageNum);
+                    // 解析度設為 1.5 倍以平衡 OCR 準確度與速度 (2.0 會有點慢)
+                    const scale = 1.5; 
+                    const viewport = page.getViewport({ scale: scale });
+
+                    const canvas = document.createElement('canvas');
+                    const context = canvas.getContext('2d');
+                    canvas.height = viewport.height;
+                    canvas.width = viewport.width;
+
+                    await page.render({ canvasContext: context, viewport: viewport }).promise;
+                    const imgData = canvas.toDataURL('image/jpeg', 0.8); // 使用 JPEG 稍微壓縮以加速 OCR
+
+                    // ★ 執行 OCR (文字辨識)
+                    // 這一步最花時間
+                    const { data: { text } } = await Tesseract.recognize(
+                        imgData,
+                        langSelect.value,
+                        {
+                            // 這裡可以加入 logger 查看詳細進度，為了介面簡潔先省略
+                        }
+                    );
+
+                    // 累積文字
+                    allExtractedText += `--- 第 ${pageNum} 頁 ---\n${text}\n\n`;
+
+                    // 設定 PPT 版面
+                    const slideWidth = viewport.width / scale / 72; 
+                    const slideHeight = viewport.height / scale / 72;
+                    const layoutName = `LAYOUT_${pageNum}`;
+                    pptx.defineLayout({ name: layoutName, width: slideWidth, height: slideHeight });
+                    
+                    const slide = pptx.addSlide(layoutName);
+                    
+                    // 加入圖片
+                    slide.addImage({ data: imgData, x: 0, y: 0, w: '100%', h: '100%' });
+
+                    // ★ 關鍵：將辨識出的文字加入 PPT 的「備忘稿 (Notes)」
+                    // 這樣既保留了圖片排版，又有了可編輯的文字
+                    slide.addNotes(text);
+
+                    canvas.remove();
+                }
+
+                progressBar.style.width = `100%`;
+                statusText.textContent = "正在生成檔案...";
+
+                // 下載 PPTX
+                await pptx.writeFile({ fileName: `${selectedFile.name.replace('.pdf', '')}_OCR.pptx` });
+
+                // 準備 TXT 下載按鈕
+                statusText.textContent = "🎉 完成！PPT 已包含圖片與備忘稿文字。";
+                convertBtn.textContent = "再次轉換";
+                convertBtn.disabled = false;
+                langSelect.disabled = false;
+                downloadTxtBtn.classList.remove('hidden');
+                downloadTxtBtn.disabled = false;
+
+            } catch (error) {
+                console.error(error);
+                statusText.textContent = `❌ 錯誤: ${error.message}`;
+                convertBtn.disabled = false;
+                langSelect.disabled = false;
+            }
+        });
+
+        // 下載純文字檔功能
+        downloadTxtBtn.addEventListener('click', () => {
+            const blob = new Blob([allExtractedText], { type: "text/plain" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `${selectedFile.name.replace('.pdf', '')}_全文.txt`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+    </script>
+</body>
+</html>
