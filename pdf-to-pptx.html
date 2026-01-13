@@ -1,1 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>圖片轉文字 (OCR) 神器</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js'></script>
 
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        /* 讓文字區域好看一點 */
+        .result-box {
+            min-height: 200px;
+            white-space: pre-wrap; /* 保留換行 */
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen p-4 md:p-8">
+
+    <div class="max-w-4xl mx-auto bg-white rounded-xl shadow-xl overflow-hidden">
+        <div class="p-8">
+            <h1 class="text-3xl font-bold text-gray-800 mb-2 text-center">📸 圖片轉文字 (OCR)</h1>
+            <p class="text-gray-500 text-sm text-center mb-8">支援繁體中文與英文，完全在瀏覽器運行，無需上傳伺服器</p>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                
+                <div class="space-y-4">
+                    <div class="flex items-center justify-center w-full">
+                        <label for="image-upload" class="flex flex-col items-center justify-center w-full h-48 border-2 border-dashed border-blue-300 rounded-lg cursor-pointer bg-blue-50 hover:bg-blue-100 transition-colors relative overflow-hidden">
+                            
+                            <div id="upload-placeholder" class="flex flex-col items-center justify-center pt-5 pb-6">
+                                <svg class="w-10 h-10 mb-3 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                                <p class="mb-2 text-sm text-gray-500"><span class="font-semibold">點擊上傳圖片</span></p>
+                                <p class="text-xs text-gray-500">JPG, PNG, BMP</p>
+                            </div>
+
+                            <img id="image-preview" class="absolute inset-0 w-full h-full object-contain hidden bg-gray-900" />
+                            
+                            <input id="image-upload" type="file" accept="image/*" class="hidden" />
+                        </label>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">辨識語言</label>
+                        <select id="lang-select" class="w-full p-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+                            <option value="chi_tra+eng">繁體中文 + 英文 (混合)</option>
+                            <option value="eng">僅英文 (English Only)</option>
+                            <option value="chi_tra">僅繁體中文</option>
+                        </select>
+                    </div>
+
+                    <button id="convert-btn" disabled class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2">
+                        開始辨識
+                    </button>
+
+                    <div id="progress-wrapper" class="hidden space-y-1">
+                        <div class="flex justify-between text-xs text-gray-600">
+                            <span id="status-text">初始化引擎...</span>
+                            <span id="percent-text">0%</span>
+                        </div>
+                        <div class="w-full bg-gray-200 rounded-full h-2.5">
+                            <div id="progress-bar" class="bg-green-500 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex flex-col h-full">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">辨識結果</label>
+                    <div class="relative flex-grow">
+                        <textarea id="result-text" class="w-full h-full p-4 border border-gray-300 rounded-lg bg-gray-50 text-gray-800 focus:ring-blue-500 focus:border-blue-500 result-box resize-none" placeholder="文字將會顯示在這裡..." readonly></textarea>
+                        
+                        <button id="copy-btn" class="absolute top-2 right-2 bg-white border border-gray-300 hover:bg-gray-100 text-gray-700 text-xs px-3 py-1 rounded shadow-sm hidden">
+                            複製文字
+                        </button>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('image-upload');
+        const imagePreview = document.getElementById('image-preview');
+        const uploadPlaceholder = document.getElementById('upload-placeholder');
+        const convertBtn = document.getElementById('convert-btn');
+        const langSelect = document.getElementById('lang-select');
+        const resultText = document.getElementById('result-text');
+        const progressWrapper = document.getElementById('progress-wrapper');
+        const progressBar = document.getElementById('progress-bar');
+        const statusText = document.getElementById('status-text');
+        const percentText = document.getElementById('percent-text');
+        const copyBtn = document.getElementById('copy-btn');
+
+        let selectedFile = null;
+
+        // 1. 圖片預覽邏輯
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                selectedFile = e.target.files[0];
+                
+                // 顯示預覽圖
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    imagePreview.src = event.target.result;
+                    imagePreview.classList.remove('hidden');
+                    uploadPlaceholder.classList.add('hidden');
+                };
+                reader.readAsDataURL(selectedFile);
+
+                convertBtn.disabled = false;
+                resultText.value = "";
+                copyBtn.classList.add('hidden');
+                progressWrapper.classList.add('hidden');
+            }
+        });
+
+        // 2. 執行 OCR
+        convertBtn.addEventListener('click', async () => {
+            if (!selectedFile) return;
+
+            // UI 狀態重置
+            convertBtn.disabled = true;
+            resultText.value = "處理中，請稍候...";
+            progressWrapper.classList.remove('hidden');
+            progressBar.style.width = '0%';
+            statusText.textContent = "載入核心...";
+            
+            const lang = langSelect.value;
+
+            try {
+                // 使用 Tesseract.js 進行辨識
+                const { data: { text } } = await Tesseract.recognize(
+                    selectedFile,
+                    lang,
+                    {
+                        // Logger 用來更新進度條
+                        logger: m => {
+                            if (m.status === 'recognizing text') {
+                                const percent = Math.round(m.progress * 100);
+                                progressBar.style.width = `${percent}%`;
+                                percentText.textContent = `${percent}%`;
+                                statusText.textContent = `正在辨識文字...`;
+                            } else {
+                                statusText.textContent = m.status; // 顯示載入語言包等狀態
+                            }
+                        }
+                    }
+                );
+
+                // 顯示結果
+                resultText.value = text;
+                convertBtn.disabled = false;
+                convertBtn.innerText = "重新辨識";
+                copyBtn.classList.remove('hidden');
+                statusText.textContent = "完成！";
+
+            } catch (error) {
+                console.error(error);
+                resultText.value = `❌ 發生錯誤: ${error.message}`;
+                convertBtn.disabled = false;
+            }
+        });
+
+        // 3. 複製功能
+        copyBtn.addEventListener('click', () => {
+            resultText.select();
+            document.execCommand('copy');
+            const originalText = copyBtn.innerText;
+            copyBtn.innerText = "已複製！";
+            setTimeout(() => copyBtn.innerText = originalText, 2000);
+        });
+
+    </script>
+</body>
+</html>
