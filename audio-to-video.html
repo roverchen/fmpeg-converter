@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio to Video 自動合成器</title>
+    <script src="coi-serviceworker.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
+
+    <div class="bg-white p-8 rounded-xl shadow-lg w-full max-w-2xl">
+        <h1 class="text-2xl font-bold text-gray-800 mb-6 text-center">🎵 音訊轉影片 (自動生成封面)</h1>
+        
+        <div class="space-y-6">
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">選擇音訊檔 (.mp3 / .m4a / .wav)</label>
+                <div class="flex items-center justify-center w-full">
+                    <label for="audio-upload" class="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-blue-300 rounded-lg cursor-pointer bg-blue-50 hover:bg-blue-100 transition-colors">
+                        <div class="flex flex-col items-center justify-center pt-5 pb-6">
+                            <svg class="w-8 h-8 mb-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"></path></svg>
+                            <p class="mb-2 text-sm text-gray-500"><span class="font-semibold">點擊上傳音檔</span></p>
+                            <p id="file-name-display" class="text-xs text-gray-500">支援長時間錄音檔</p>
+                        </div>
+                        <input id="audio-upload" type="file" accept="audio/*" class="hidden" />
+                    </label>
+                </div>
+            </div>
+
+            <div id="preview-area" class="hidden text-center">
+                <p class="text-sm text-gray-500 mb-2">將使用此自動生成的封面：</p>
+                <img id="cover-preview" class="mx-auto rounded shadow-md max-h-48 border border-gray-200" />
+            </div>
+
+            <button id="convert-btn" disabled class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                開始轉檔 (Start FFmpeg)
+            </button>
+
+            <div id="status-area" class="hidden bg-gray-50 p-4 rounded-lg border border-gray-200 text-sm font-mono text-gray-600 max-h-40 overflow-y-auto">
+                <p>等待指令...</p>
+            </div>
+
+            <div id="result-area" class="hidden text-center">
+                <h3 class="text-lg font-bold text-gray-800 mb-2">🎉 轉檔完成！</h3>
+                <video id="output-video" controls class="w-full rounded-lg shadow-md mb-4 bg-black"></video>
+                <a id="download-link" class="inline-block bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded-full transition-colors">
+                    下載影片
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createFFmpeg, fetchFile } = FFmpeg;
+        const ffmpeg = createFFmpeg({ log: true });
+
+        const audioInput = document.getElementById('audio-upload');
+        const fileNameDisplay = document.getElementById('file-name-display');
+        const convertBtn = document.getElementById('convert-btn');
+        const statusArea = document.getElementById('status-area');
+        const resultArea = document.getElementById('result-area');
+        const outputVideo = document.getElementById('output-video');
+        const downloadLink = document.getElementById('download-link');
+        const previewArea = document.getElementById('preview-area');
+        const coverPreview = document.getElementById('cover-preview');
+
+        let generatedImageBlob = null; // 儲存生成的圖片 Blob
+
+        const log = (message) => {
+            statusArea.innerHTML += `<p>> ${message}</p>`;
+            statusArea.scrollTop = statusArea.scrollHeight;
+        };
+
+        // ★ 新增功能：動態生成圖片函式
+        function generateImageFromText(text) {
+            const canvas = document.createElement('canvas');
+            // 設定畫布大小 (為了省記憶體，我們直接設定為 854x480，即 480p)
+            canvas.width = 854;
+            canvas.height = 480;
+            const ctx = canvas.getContext('2d');
+
+            // 1. 繪製背景 (深藍色漸層)
+            const gradient = ctx.createLinearGradient(0, 0, 854, 480);
+            gradient.addColorStop(0, '#1e3a8a'); // blue-900
+            gradient.addColorStop(1, '#3b82f6'); // blue-500
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // 2. 繪製文字
+            ctx.fillStyle = 'white';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            
+            // 自動調整字型大小
+            let fontSize = 40;
+            ctx.font = `bold ${fontSize}px Arial`;
+            
+            // 簡單的文字換行邏輯 (如果太長)
+            const maxWidth = 800;
+            const words = text.split(' ');
+            let line = '';
+            let lines = [];
+            
+            // 這裡簡化處理：直接把檔名印在中間，如果太長就截斷
+            if (ctx.measureText(text).width > maxWidth) {
+                fontSize = 30; // 縮小字體
+                ctx.font = `bold ${fontSize}px Arial`;
+            }
+            
+            ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+            
+            // 3. 添加一個裝飾圖示 (音符)
+            ctx.font = '60px Arial';
+            ctx.fillText('🎵', canvas.width / 2, canvas.height / 2 - 80);
+
+            // 4. 轉為 Blob
+            return new Promise(resolve => {
+                canvas.toBlob(blob => {
+                    resolve(blob);
+                }, 'image/jpeg', 0.9);
+            });
+        }
+
+        // 監聽檔案選擇
+        audioInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                fileNameDisplay.innerText = file.name;
+                
+                // 立即生成封面圖
+                const fileName = file.name;
+                generatedImageBlob = await generateImageFromText(fileName);
+                
+                // 顯示預覽
+                const url = URL.createObjectURL(generatedImageBlob);
+                coverPreview.src = url;
+                previewArea.classList.remove('hidden');
+                
+                convertBtn.disabled = false;
+            }
+        });
+
+        convertBtn.addEventListener('click', async () => {
+            const audioFile = audioInput.files[0];
+
+            if (!audioFile || !generatedImageBlob) {
+                alert('請先選擇音檔！');
+                return;
+            }
+
+            // UI 狀態更新
+            convertBtn.disabled = true;
+            convertBtn.innerText = "處理中... (瀏覽器運算中)";
+            statusArea.classList.remove('hidden');
+            resultArea.classList.add('hidden');
+            statusArea.innerHTML = '';
+
+            // 檢查環境
+            if (!window.crossOriginIsolated) {
+                log("⚠️ 警告：SharedArrayBuffer 未啟用，可能會轉檔失敗。請檢查 coi-serviceworker。");
+            }
+
+            try {
+                if (!ffmpeg.isLoaded()) {
+                    log('載入 FFmpeg 核心...');
+                    await ffmpeg.load();
+                }
+
+                const imgName = 'cover.jpg';
+                const audioName = 'input_audio.m4a'; // 統一名稱方便處理
+                
+                log('寫入檔案到虛擬記憶體...');
+                // 寫入生成的圖片
+                ffmpeg.FS('writeFile', imgName, await fetchFile(generatedImageBlob));
+                // 寫入上傳的音檔
+                ffmpeg.FS('writeFile', audioName, await fetchFile(audioFile));
+
+                log('🚀 啟動極限省資源模式 (Audio + Static Image)...');
+                
+                // 執行轉檔指令
+                await ffmpeg.run(
+                    '-loop', '1',           // 圖片無限循環
+                    '-framerate', '1',      // 輸入幀率設為 1fps (極省記憶體)
+                    '-i', imgName,          // 輸入圖片
+                    '-i', audioName,        // 輸入音檔
+                    
+                    // 不需要 scale 了，因為我們生成圖片時已經控制在 854x480
+                    // '-vf', 'scale=854:-2', 
+                    
+                    '-c:v', 'libx264',      // 影像編碼
+                    '-preset', 'ultrafast', // 最快速度
+                    '-tune', 'stillimage',  // 靜態圖優化
+                    
+                    '-r', '1',              // 輸出影片幀率強制 1fps (關鍵!)
+                    '-b:v', '500k',         // 限制影像位元率
+                    
+                    '-c:a', 'copy',         // 音訊直接複製 (不重編碼，最快且無損)
+                    '-pix_fmt', 'yuv420p',  // 相容性設定
+                    '-shortest',            // 影片長度等於音訊長度
+                    'output.mp4'
+                );
+
+                log('轉檔完成！準備下載...');
+
+                const data = ffmpeg.FS('readFile', 'output.mp4');
+                const videoBlob = new Blob([data.buffer], { type: 'video/mp4' });
+                const videoUrl = URL.createObjectURL(videoBlob);
+
+                outputVideo.src = videoUrl;
+                downloadLink.href = videoUrl;
+                downloadLink.download = `${audioFile.name.split('.')[0]}.mp4`; // 檔名跟隨音檔
+
+                resultArea.classList.remove('hidden');
+                log('✅ 全部完成！');
+
+            } catch (error) {
+                console.error(error);
+                log(`❌ 錯誤: ${error.message}`);
+                alert('轉檔失敗，請確認記憶體是否足夠或檔案是否損毀。');
+            } finally {
+                convertBtn.disabled = false;
+                convertBtn.innerText = "開始轉檔 (Start FFmpeg)";
+            }
+        });
+    </script>
+</body>
+</html>
