@@ -187,52 +187,73 @@
                     const slide = pptx.addSlide(layoutName);
 
                     if (mode === 'native') {
-                        // === 模式 B: 原生文字還原 (分離圖文模式) ===
+                        // === 模式 B: 原生文字還原 (分離圖文模式 - 進階版) ===
 
-                        // 1. 產生背景圖 (嘗試移除文字)
-                        // 使用 Proxy 攔截 Canvas Context 的繪圖指令，略過文字繪製
-                        const bgCanvas = document.createElement('canvas');
-                        bgCanvas.width = viewport.width;
-                        bgCanvas.height = viewport.height;
-                        const bgCtx = bgCanvas.getContext('2d');
+                        // 1. 正常渲染整頁到 Canvas (這會包含所有圖案和文字)
+                        const canvas = document.createElement('canvas');
+                        canvas.width = viewport.width;
+                        canvas.height = viewport.height;
+                        const ctx = canvas.getContext('2d');
 
-                        // 建立一個 "不畫文字" 的 Context Proxy
-                        const noTextCtx = new Proxy(bgCtx, {
-                            get(target, prop) {
-                                if (prop === 'fillText' || prop === 'strokeText') {
-                                    // 回傳空函數，攔截文字繪製
-                                    return () => { };
-                                }
+                        await page.render({ canvasContext: ctx, viewport: viewport }).promise;
 
-                                let value = target[prop];
-                                if (typeof value === 'function') {
-                                    return function (...args) {
-                                        return value.apply(target, args);
-                                    };
-                                }
-                                return value;
-                            },
-                            set(target, prop, value) {
-                                target[prop] = value;
-                                return true;
-                            }
-                        });
-
-
-                        // 渲染到這個 "無字" 畫布
-                        // 注意: pdf.js 的 render 必須傳入 canvasContext
-                        await page.render({ canvasContext: noTextCtx, viewport: viewport }).promise;
-
-                        // 取得背景圖 (無字版)
-                        const bgImgData = bgCanvas.toDataURL('image/jpeg', 0.8);
-
-                        // 加入背景圖
-                        slide.addImage({ data: bgImgData, x: 0, y: 0, w: '100%', h: '100%' });
-
-                        // 2. 取得文字並疊加
+                        // 2. 取得文字結構
                         const textContent = await page.getTextContent();
 
+                        // 3. 從 Canvas 中「擦除」文字區域 (Text Erasure Strategy)
+                        // 這是最穩健的方法：不管 pdf.js 怎麼畫字 (fillText 或 path)，我們都把文字位置變成透明。
+                        // 這樣背景圖就是一張「有洞」的圖，加上我們疊上去的可編輯文字，視覺上就完成了分離。
+
                         textContent.items.forEach(item => {
+                            if (!item.str || item.str.trim() === '') return;
+
+                            // 取得 Item 的變形矩陣 [scaleX, skewY, skewX, scaleY, tx, ty]
+                            // 注意：這是 PDF 坐標系
+                            const tx = item.transform[4];
+                            const ty = item.transform[5];
+
+                            // 取得寬高 (PDF 單位)
+                            const w = item.width;
+                            const h = item.height || item.transform[3];
+
+                            // 轉換為 Canvas 座標 (Pixels)
+                            // 我們使用 viewport.convertToViewportPoint 轉換起點
+                            const p1 = viewport.convertToViewportPoint(tx, ty);
+                            // p1 是 [x, y] in pixels.
+                            // 注意: PDF 中的 tx, ty 是 text baseline start.
+                            // Canvas 座標 y 軸向下。
+
+                            const scaleX = viewport.transform[0];
+                            const scaleY = -viewport.transform[3]; // Y 軸翻轉了
+
+                            // 估算 Canvas 上的包覆框
+                            // 寬度: w * scale
+                            // 高度: h * scale
+                            // 起點: p1[0], p1[1] 是 baseline。所以 Top 應該是 p1[1] - Height
+
+                            const rectW = w * scale;
+                            const rectH = h * scale;
+
+                            // 擴大一點點擦除範圍，避免邊緣殘留
+                            const expansion = 4;
+
+                            const rectX = p1[0] - expansion;
+                            const rectY = p1[1] - rectH - expansion; // Baseline 往上推 rectH
+
+                            const clearW = rectW + (expansion * 2);
+                            const clearH = rectH + (expansion * 2);
+
+                            ctx.clearRect(rectX, rectY, clearW, clearH);
+                        });
+
+                        // 4. 匯出背景圖 (已擦除文字)
+                        const bgImgData = canvas.toDataURL('image/png');
+                        slide.addImage({ data: bgImgData, x: 0, y: 0, w: '100%', h: '100%' });
+
+                        // 5. 疊加可編輯文字
+                        textContent.items.forEach(item => {
+                            if (!item.str || item.str.trim() === '') return;
+
                             const tx = item.transform[4];
                             const ty = item.transform[5];
 
@@ -250,11 +271,10 @@
                                 y: pptY_adjusted,
                                 fontSize: fontSize, // pt
                                 color: '000000', // 預設黑字
-                                // 既然有背景圖，可以考慮加一點陰影或背景色確保可讀，但 User 要的是分離，先保持純字
                             });
                         });
 
-                        bgCanvas.remove();
+                        canvas.remove();
 
                     } else {
                         // === 模式 A: 圖片 + OCR (既有邏輯) ===
